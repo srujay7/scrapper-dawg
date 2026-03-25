@@ -7,22 +7,26 @@ from openai import OpenAI
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 ASINS = [
-    "B0FBZ39SS4", "B0D63HZ1FN", "B0FBZ7VSZB", "B0D63KC5PC", "B0CPYL7DLD",
-    "B00VO4JDTA", "B0C1GGX5SZ", "B004SCS9X6", "B0FBZJ2V85", "B0D184CNR3",
-    "B09L8ZB9LP", "B004721N08", "B00472L3QM", "B01N3W3QRJ", "B0DMNNH3ZG",
-    "B0727KXQH5", "B000WCZKP6", "B004T33PD8", "B004SIARHQ", "B0B847SZ72",
-    "B0087N3MOI", "B07CD53BNT", "B07PWKYW6B", "B083LL79RJ", "B000M9JJCO",
-    "B0GQJGNMC7", "B0CVXPL8SG", "B0FZFRBPZK", "B08TYRFMV1", "B0FBZG8GLG",
-    "B0GRLHZM55", "B000R32OKY", "B076BYR9JP", "B0BK1YZ8HM", "B0F65BWSN5",
-    "B0D63KC9GK", "B0D63K16JJ", "B07HHJ89L3", "B0D63MPSQL", "B0D14XQQYX",
-    "B0D14YP5MN", "B0D14YCQ7K", "B0G1MPJFL2", "B0CW57NRTD", "B00M3TYRB4",
-    "B00BVPKQLQ", "B000S5MDRA", "B06XKVRPMF", "B0CKFBGT9S", "B0GJTHJD18",
-    "B0746RLVXC", "B0BPW9ZS31", "B0F9NBP6ZT", "B0G1XFD9KB", "B0CB65F3X2",
-    "B00KJCKHP2",
+    "B0B4T65TYG", "B0F499FLML", "B0DHLN49LB", "B0CWMMGWQM", "B09FFTFLMZ",
+    "B098KLGTLY", "B0C231FV5L", "B0CLWBCNZS", "B0DX22ZY1W", "B000A3I3PQ",
+    "B012OV0QTW", "B0B2DB5QQM", "B077SX9BFW", "B0DNJRMK6L", "B07RL5Z85M",
+    "B0DBHHR1SH", "B0DFWNQZVW", "B0D49CSNS7", "B0FT2C44M9", "B0DZCKT2MD",
+    "B0FL6YNJN5", "B08YGXS9PZ", "B0BZJVFHHW", "B08419RPNS", "B01ETP2O6Y",
+    "B0DX23HNCK", "B08PJ6R61W", "B0B41B9VPN", "B000JWFCGG", "B0F9ZKD914",
+    "B0CKZ4ZWYG", "B07HQFXZCW", "B07M8NV1ZJ", "B0787P86ZZ", "B0FB8SWBQJ",
+    "B0DS279YBH", "B0FFJS1CJ8", "B0DQ1GTVMQ", "B0FPCW85GM", "B09K5VR88R",
+    "B0D2Q1NBBL", "B0F5VTHLKG", "B0D93X4QBG", "B0DZ2D5SL6", "B0D7ZL881N",
+    "B0FX7SMCZV", "B0FYM6QT23", "B07RHXY7Y6", "B07YH25WWQ", "B01LI4INCS",
+    "B0DHG9NLBS", "B094WBJG6W", "B0BRY7Q1FS", "B0CR18M23H", "B0DZWRB1G3",
+    "B0G2XRDG6M", "B089S1LPWD", "B0CWNZWQ5L", "B0CBC69D6Y", "B07BJKY3JG",
+    "B07YF5CR4V", "B07BKVF1MX", "B0GCF8X68K", "B09V28SJ2D", "B00JUM2VAQ",
+    "B0DN63QCQK", "B0DSJG1LWQ", "B07L741RTN", "B0C76R6B42", "B08WWDSL4C",
+    "B0CJ4GL4JN", "B0CYP43961", "B0D3LDBY1T",
 ]
 
 BASE_URL = "https://www.amazon.com/dp/"
-PAGE_LOAD_WAIT = 7  # seconds to wait for page to fully load
+PAGE_LOAD_WAIT = 4  # fallback max wait if smart wait fails
+SMART_WAIT_TIMEOUT = 10000  # ms — max time to wait for product title to appear
 RESULTS_FILE = "results.json"
 LEARNINGS_FILE = "learnings.md"
 BRAND_CACHE_FILE = "asin_brand_cache.json"
@@ -108,7 +112,7 @@ def expand_and_extract_brand(page, section_names: list[str]) -> tuple[str | None
         if clicked:
             print(f"  Expanded: {clicked}")
 
-    time.sleep(2)
+    time.sleep(1)
 
     brand = page.evaluate("""
         (() => {
@@ -238,11 +242,32 @@ def scrape_brand(page, asin: str) -> dict:
 
     try:
         page.goto(url, wait_until="domcontentloaded")
-        print(f"  Waiting {PAGE_LOAD_WAIT}s for page to fully load...")
-        time.sleep(PAGE_LOAD_WAIT)
+
+        # Smart wait: wait for product title element to appear instead of fixed delay
+        try:
+            page.wait_for_selector("#productTitle, #title, form[action='/errors/validateCaptcha']", timeout=SMART_WAIT_TIMEOUT)
+            # Small buffer for remaining JS to settle
+            time.sleep(1)
+        except Exception:
+            # Fallback to fixed wait if smart wait times out
+            print(f"  Smart wait timed out, falling back to {PAGE_LOAD_WAIT}s fixed wait...")
+            time.sleep(PAGE_LOAD_WAIT)
 
         title = page.title()
         print(f"  Page title: {title}")
+
+        # Check for blank page (transient Amazon issue) — retry once
+        if title == "Amazon.com" and not page.query_selector("#productTitle"):
+            print("  Blank page detected — retrying...")
+            time.sleep(3)
+            page.reload(wait_until="domcontentloaded")
+            try:
+                page.wait_for_selector("#productTitle, #title", timeout=SMART_WAIT_TIMEOUT)
+                time.sleep(1)
+            except Exception:
+                time.sleep(PAGE_LOAD_WAIT)
+            title = page.title()
+            print(f"  Page title after retry: {title}")
 
         # Check for CAPTCHA or blocked page
         if "Robot Check" in title or "Sorry" in title:
@@ -267,7 +292,11 @@ def scrape_brand(page, asin: str) -> dict:
             print(f"  Got 503 — retrying in {wait}s (attempt {retries}/2)...")
             time.sleep(wait)
             page.reload(wait_until="domcontentloaded")
-            time.sleep(PAGE_LOAD_WAIT)
+            try:
+                page.wait_for_selector("#productTitle, #title", timeout=SMART_WAIT_TIMEOUT)
+                time.sleep(1)
+            except Exception:
+                time.sleep(PAGE_LOAD_WAIT)
             title = page.title()
             print(f"  Page title after retry: {title}")
 
@@ -314,7 +343,7 @@ def scrape_brand(page, asin: str) -> dict:
             print(f"  Brand found (Byline): {brand}")
             return result
 
-        # Method 5: Use Gemini to infer brand from product title
+        # Method 5: Use OpenAI to infer brand from product title
         product_title = get_product_title(page)
         if product_title:
             print(f"  Trying: OpenAI LLM (product title: '{product_title[:60]}...')")

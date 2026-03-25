@@ -100,3 +100,18 @@ From scraping 15+ ASINs, here are the places where Brand can be found, in order 
 ## Learning 13 - 2026-03-25 (ASIN-to-brand cache)
 - **Issue:** Re-scraping previously fetched ASINs wastes time and increases risk of being rate-limited.
 - **Resolution:** Added `asin_brand_cache.json` — a persistent ASIN→brand lookup file. The scraper checks this cache before scraping. If a brand is already cached, it skips the scrape. New brands are added to the cache after each successful extraction. This also serves as a master reference file for all scraped brands.
+
+## Learning 14 - 2026-03-25 (Performance optimization — smart wait)
+- **Before:** Fixed 7s page wait + 2s expand wait = ~14s per ASIN
+- **After:** Smart wait for `#productTitle` selector + 1s buffer + 1s expand wait = ~8.9s per ASIN
+- **Improvement:** 36% faster (~9 min for 73 ASINs instead of ~17 min)
+- **Changes made:**
+  - Replaced `time.sleep(7)` with `page.wait_for_selector("#productTitle", timeout=10000)` + 1s buffer
+  - Reduced expand click wait from 2s to 1s
+  - Kept 4s as fallback if smart wait times out
+  - Added blank page detection with auto-retry (title == "Amazon.com" with no #productTitle)
+
+## Error - 2026-03-25 21:59:01
+- **ASIN:** B0B4T65TYG
+- **Error:** Blank page loaded (title "Amazon.com", no product content) — transient Amazon issue
+- **Resolution:** Added blank page detection with auto-retry. Previously scraped successfully as "Skechers".
